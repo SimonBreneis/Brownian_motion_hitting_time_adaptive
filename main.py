@@ -67,7 +67,25 @@ def get_average_accuracy_nn(train_features, train_labels, test_features, test_la
     return np.average(accuracies)
 
 
-def get_average_accuracy_rf(train_features, train_labels, test_features, test_labels, number_rf=1, number_trees=100):
+def predict_rf(train_features, train_labels, test_features, args):
+    number_rf = args["number_rf"]
+    number_trees = args["number_trees"]
+    predictions_full = np.array(Parallel(n_jobs=min(cpu_number, number_rf))(
+        delayed(predict_rf_parallelized)(train_features, train_labels, test_features, number_trees)
+        for _ in range(number_rf)))
+    return np.around(np.sum(predictions_full, axis=0)/float(number_rf))
+
+
+def predict_rf_parallelized(train_features, train_labels, test_features, number_trees=100):
+    rf = RandomForestClassifier(n_estimators=number_trees, verbose=0)
+    rf.fit(train_features, train_labels)
+    return np.around(rf.predict(test_features))
+
+
+def get_average_accuracy_rf(train_features, train_labels, test_features, test_labels, args):
+    # args includes number_rf and number_trees
+    number_rf = args["number_rf"]
+    number_trees = args["number_trees"]
     accuracies = Parallel(n_jobs=min(cpu_number, number_rf))(
         delayed(get_accuracy_rf_parallelized)(train_features, train_labels, test_features, test_labels, number_trees)
         for _ in range(number_rf))
@@ -80,6 +98,41 @@ def get_accuracy_rf_parallelized(train_features, train_labels, test_features, te
     predictions = np.around(rf.predict(test_features))
     predictions_correct = (predictions == test_labels)
     return float(np.sum(predictions_correct)) / len(predictions_correct)
+
+
+class SignatureForest:
+    def __init__(self, train_paths, validation_paths, train_labels, validation_labels, initial_signature_level=0, number_siganture_trees=10):
+        self.train_paths = train_paths
+        self.validation_paths = validation_paths
+        self.train_labels = train_labels
+        self.validation_labels = validation_labels
+        self.signature_trees = []
+        self.number_signature_trees = number_siganture_trees
+        number_train_elements = int(len(train_labels)/np.sqrt(number_siganture_trees))
+        number_validation_elements = int(len(validation_labels)/np.sqrt(number_siganture_trees))
+        for _ in range(number_siganture_trees):
+            tree_train_elements = np.random.randint(len(train_labels), size=number_train_elements)
+            tree_validation_elements = np.random.randint(len(validation_labels), size=number_validation_elements)
+            tree_train_paths = np.array([train_paths[element, :, :] for element in tree_train_elements])
+            tree_train_labels = np.array([train_labels[element] for element in tree_train_elements])
+            tree_validation_paths = np.array([validation_paths[element, :, :] for element in tree_validation_elements])
+            tree_validation_labels = np.array([validation_labels[element] for element in tree_validation_elements])
+            self.signature_trees.append(SignatureTree(train_paths=tree_train_paths, validation_paths=tree_validation_paths, train_labels=tree_train_labels, validation_labels=tree_validation_labels, initial_signature_level=initial_signature_level))
+
+    def find_nodes_number(self, number_nodes=2, mode="full", accuracy_function=None, args=None):
+        for signature_tree in self.signature_trees:
+            signature_tree.find_nodes_number(number_nodes=number_nodes, mode=mode, accuracy_function=accuracy_function, args=args)
+
+    def get_accuracy(self, test_paths, test_labels, accuracy_function, predict_function, args=None):
+        signature_tree_accuracies = []
+        full_predictions = np.empty(shape=(self.number_signature_trees, len(test_labels)))
+        for tree_nr in range(self.number_signature_trees):
+            signature_tree_accuracies.append(self.signature_trees[tree_nr].get_accuracy(test_paths=self.validation_paths, test_labels=self.validation_labels, accuracy_function=accuracy_function, args=args))
+            full_predictions[tree_nr, :] = self.signature_trees[tree_nr].predict(test_paths=test_paths, predict_function=predict_function, args=args)
+        predictions = np.around(np.dot(full_predictions.transpose(), signature_tree_accuracies)/np.sum(signature_tree_accuracies))
+        print(signature_tree_accuracies)
+        predictions_correct = (predictions == test_labels)
+        return float(np.sum(predictions_correct))/len(predictions_correct)
 
 
 class SignatureTree:
@@ -116,11 +169,11 @@ class SignatureTree:
 
     def add_signature_node(self, mode):
         if mode == "full":
-            self.add_signature_node_full()
+            return self.add_signature_node_full()
         if mode == "linear":
-            self.add_signature_node_linear()
+            return self.add_signature_node_linear()
         if mode == "elimination":
-            self.add_signature_node_elimination()
+            return self.add_signature_node_elimination()
 
     def add_signature_node_initial(self, signature_node):
         if signature_node.get_index() not in self.get_indices():
@@ -130,6 +183,8 @@ class SignatureTree:
             if signature_node in self.signature_leaves:
                 self.signature_leaves.remove(signature_node)
             self.signature_leaves.extend(signature_node.get_successor_leaves())
+            return True
+        return False
 
     def add_signature_node_full(self):
         best_node_index = np.argmax(self.current_validation_accuracies_leaves)
@@ -141,6 +196,8 @@ class SignatureTree:
             if best_node in self.signature_leaves:
                 self.signature_leaves.remove(best_node)
             self.signature_leaves.extend(best_node.get_successor_leaves())
+            return True
+        return False
 
     def add_signature_node_linear(self):
         best_node_index = np.argmax(self.current_validation_accuracies_leaves)
@@ -150,17 +207,23 @@ class SignatureTree:
             best_node.compute_successors()
             best_node.set_is_active(True)
             self.signature_leaves = best_node.get_successor_leaves()
+            return True
+        return False
 
     def add_signature_node_elimination(self):
+        added_node = False
         best_node_index = np.argmax(self.current_validation_accuracies_leaves)
         best_node = self.signature_leaves[best_node_index]
-        if best_node.get_index() not in self.get_indices() and self.current_validation_accuracies_leaves[best_node_index] > self.current_validation_accuracy:
+        if best_node.get_index() not in self.get_indices() and self.current_validation_accuracies_leaves[
+            best_node_index] > self.current_validation_accuracy:
             self.signature_nodes.append(best_node)
             best_node.compute_successors()
             best_node.set_is_active(True)
+            added_node = True
             if best_node in self.signature_leaves:
                 self.signature_leaves.remove(best_node)
-                self.current_validation_accuracies_leaves = np.delete(self.current_validation_accuracies_leaves, best_node_index)
+                self.current_validation_accuracies_leaves = np.delete(self.current_validation_accuracies_leaves,
+                                                                      best_node_index)
         median_validation_accuracy_leaves = np.median(self.current_validation_accuracies_leaves)
         number_leaves = len(self.current_validation_accuracies_leaves)
         leaves_to_delete = []
@@ -169,10 +232,12 @@ class SignatureTree:
                 leaves_to_delete.append(node_index)
         for node_index in sorted(leaves_to_delete, reverse=True):
             del self.signature_leaves[node_index]
-        self.current_validation_accuracies_leaves = np.delete(self.current_validation_accuracies_leaves, leaves_to_delete)
+        self.current_validation_accuracies_leaves = np.delete(self.current_validation_accuracies_leaves,
+                                                              leaves_to_delete)
         self.signature_leaves.extend(best_node.get_successor_leaves())
         if len(self.signature_leaves) == 1:
             self.signature_leaves = []
+        return added_node
 
     def get_path_dim(self):
         return self.path_dim
@@ -197,6 +262,13 @@ class SignatureTree:
 
     def get_number_nodes(self):
         return len(self.signature_nodes)
+
+    def get_depth(self):
+        depth = 0
+        indices = self.get_indices()
+        for index in indices:
+            depth = max(depth, len(index))
+        return depth
 
     def get_indices(self):
         indices = []
@@ -228,50 +300,65 @@ class SignatureTree:
             features[:, i] = self.signature_nodes[i].get_normalized_features(kind)
         return features
 
-    def get_accuracy_including_leave(self, signature_leave, train_features, validation_features, number_rf=1,
-                                     number_trees=100):
+    def get_accuracy_including_leave(self, signature_leave, train_features, validation_features, accuracy_function=None,
+                                     args=None):
         train_features[:, -1] = signature_leave.get_normalized_features("train")
         validation_features[:, -1] = signature_leave.get_normalized_features("validation")
-        return get_average_accuracy_rf(train_features=train_features,
-                                       train_labels=self.train_labels,
-                                       test_features=validation_features,
-                                       test_labels=self.validation_labels, number_rf=number_rf,
-                                       number_trees=number_trees)
+        return accuracy_function(train_features=train_features,
+                                 train_labels=self.train_labels,
+                                 test_features=validation_features,
+                                 test_labels=self.validation_labels, args=args)
 
-    def find_new_node(self, number_rf=1, number_trees=100, mode="full"):
-        self.current_validation_accuracy = get_average_accuracy_rf(train_features=self.get_normalized_features("train"),
-                                                                   train_labels=self.train_labels,
-                                                                   test_features=self.get_normalized_features(
-                                                                       "validation"),
-                                                                   test_labels=self.validation_labels,
-                                                                   number_rf=number_rf, number_trees=number_trees)
+    def find_new_node(self, mode="full", accuracy_function=None, args=None):
+        self.current_validation_accuracy = accuracy_function(train_features=self.get_normalized_features("train"),
+                                                             train_labels=self.train_labels,
+                                                             test_features=self.get_normalized_features(
+                                                                 "validation"),
+                                                             test_labels=self.validation_labels,
+                                                             args=args)
         number_nodes = self.get_number_nodes() + 1
         train_features = np.empty(shape=(self.get_number_samples("train"), number_nodes))
         validation_features = np.empty(shape=(self.get_number_samples("validation"), number_nodes))
         train_features[:, :-1] = self.get_normalized_features("train")
         validation_features[:, :-1] = self.get_normalized_features("validation")
         signature_leaves = self.signature_leaves
-        self.current_validation_accuracies_leaves = Parallel(n_jobs=int(max(1, cpu_number/min(cpu_number, number_rf))))(delayed(self.get_accuracy_including_leave)(signature_leave=signature_leave, train_features=train_features, validation_features=validation_features, number_rf=number_rf, number_trees=number_trees) for signature_leave in signature_leaves)
-        self.add_signature_node(mode)
+        self.current_validation_accuracies_leaves = Parallel(
+            n_jobs=int(max(1, cpu_number / min(cpu_number, number_rf))))(
+            delayed(self.get_accuracy_including_leave)(signature_leave=signature_leave, train_features=train_features,
+                                                       validation_features=validation_features,
+                                                       accuracy_function=accuracy_function, args=args) for
+            signature_leave in signature_leaves)
+        return self.add_signature_node(mode)
 
-    def find_nodes_number(self, number_nodes=2, number_rf=1, number_trees=100, mode="full"):
+    def find_nodes_number(self, number_nodes=2, mode="full", accuracy_function=None, args=None):
         for i in range(0, number_nodes):
-            if len(self.signature_leaves) != 0:
-                self.find_new_node(number_rf=number_rf, number_trees=number_trees, mode=mode)
-            else:
-                print("Training finished!")
-                break
+            found_new_node = False
+            while not found_new_node:
+                if len(self.signature_leaves) != 0:
+                    found_new_node = self.find_new_node(mode=mode, accuracy_function=accuracy_function, args=args)
+                else:
+                    print("Training finished!")
+                    break
 
-    def get_accuracy(self, test_paths, test_labels, number_rf=1, number_trees=100):
+    def predict(self, test_paths, predict_function, args):
+        self.test_paths = test_paths
+        self.test_increments = test_paths[:, :, 1:] - test_paths[:, :, :-1]
+        self.signature_nodes[0].compute_test_values(
+            test_values=np.ones(shape=(test_paths.shape[0], test_paths.shape[2])))
+        return predict_function(train_features=self.get_normalized_features("train"),
+                                 train_labels=self.train_labels,
+                                 test_features=self.get_normalized_features("test"), args=args)
+
+    def get_accuracy(self, test_paths, test_labels, accuracy_function, args):
         self.test_paths = test_paths
         self.test_increments = test_paths[:, :, 1:] - test_paths[:, :, :-1]
         self.test_labels = test_labels
         self.signature_nodes[0].compute_test_values(
             test_values=np.ones(shape=(test_paths.shape[0], test_paths.shape[2])))
-        return get_average_accuracy_rf(train_features=self.get_normalized_features("train"),
-                                       train_labels=self.train_labels,
-                                       test_features=self.get_normalized_features("test"), test_labels=self.test_labels,
-                                       number_rf=number_rf, number_trees=number_trees)
+        return accuracy_function(train_features=self.get_normalized_features("train"),
+                                 train_labels=self.train_labels,
+                                 test_features=self.get_normalized_features("test"), test_labels=self.test_labels,
+                                 args=args)
 
 
 class SignatureNode:
@@ -377,10 +464,12 @@ number_validation_paths = 1000
 number_test_paths = 1000
 time_steps = 100
 T = 1.
-number_nodes_vec = (1, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024)
-# number_nodes_vec = (1, 1, 2)
+# number_nodes_vec = (1, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024)
+number_nodes_vec = (1, 1, 1)
 number_rf = 100
 number_trees = 10
+number_signature_trees = 10
+args = {"number_rf": number_rf, "number_trees": number_trees}
 
 cpu_number = joblib.cpu_count() - 2
 
@@ -399,25 +488,41 @@ test_paths = np.array(
 test_labels = np.array(
     Parallel(n_jobs=cpu_number)(delayed(check_hitting)(test_paths[i, 1, :], 1) for i in range(number_test_paths)))
 
+forest = SignatureForest(train_paths=train_paths, validation_paths=validation_paths, train_labels=train_labels, validation_labels=validation_labels, initial_signature_level=0, number_siganture_trees=number_signature_trees)
 
-tree = SignatureTree(train_paths=train_paths, validation_paths=validation_paths, train_labels=train_labels,
-                           validation_labels=validation_labels, initial_signature_level=0)
 total_time = 0
 total_nodes = 0
 for number_nodes in number_nodes_vec:
     tic = time.perf_counter()
-    tree.find_nodes_number(number_nodes=number_nodes, number_rf=number_rf, number_trees=number_trees, mode="elimination")
+    forest.find_nodes_number(number_nodes=number_nodes, mode="elimination", accuracy_function=get_average_accuracy_rf,
+                           args=args)
     toc = time.perf_counter()
     total_time += toc - tic
     total_nodes += number_nodes
-    print('It took {0} seconds to find {1} nodes in the linear SignatureTree.'.format(total_time, total_nodes))
-    print(tree.get_indices())
-    # print(len(tree.get_indices()))
-    print(tree.get_signature_node_and_leave_indices())
-    # print(tree.get_accuracy(test_paths=train_paths, test_labels=train_labels))
-    # print(tree.get_accuracy(test_paths=validation_paths, test_labels=validation_labels))
+    print('It took {0} seconds to find {1} nodes in the elimination SignatureTree.'.format(total_time, total_nodes))
     print('The accuracy is {0}.'.format(
-        tree.get_accuracy(test_paths=test_paths, test_labels=test_labels, number_rf=number_rf)))
+        forest.get_accuracy(test_paths=test_paths, test_labels=test_labels, accuracy_function=get_average_accuracy_rf, predict_function=predict_rf,
+                          args=args)))
+
+tree = SignatureTree(train_paths=train_paths, validation_paths=validation_paths, train_labels=train_labels,
+                     validation_labels=validation_labels, initial_signature_level=0)
+total_time = 0
+total_nodes = 0
+for number_nodes in number_nodes_vec:
+    tic = time.perf_counter()
+    tree.find_nodes_number(number_nodes=number_nodes, mode="elimination", accuracy_function=get_average_accuracy_rf,
+                           args=args)
+    toc = time.perf_counter()
+    total_time += toc - tic
+    total_nodes += number_nodes
+    print('It took {0} seconds to find {1} nodes in the elimination SignatureTree.'.format(total_time, total_nodes))
+    print(tree.get_indices())
+    print(len(tree.get_indices()))
+    print(tree.get_depth())
+    print(tree.get_signature_node_and_leave_indices())
+    print('The accuracy is {0}.'.format(
+        tree.get_accuracy(test_paths=test_paths, test_labels=test_labels, accuracy_function=get_average_accuracy_rf,
+                          args=args)))
 
 tree = SignatureTree(train_paths=train_paths, validation_paths=validation_paths, train_labels=train_labels,
                      validation_labels=validation_labels, initial_signature_level=2)
@@ -425,32 +530,32 @@ total_time = 0
 total_nodes = 0
 for number_nodes in number_nodes_vec:
     tic = time.perf_counter()
-    tree.find_nodes_number(number_nodes=number_nodes, number_rf=number_rf, mode="full")
+    tree.find_nodes_number(number_nodes=number_nodes, args=args, mode="full",
+                           accuracy_function=get_average_accuracy_rf)
     toc = time.perf_counter()
     total_time += toc - tic
     total_nodes += number_nodes
     print('It took {0} seconds to find {1} nodes in the full SignatureTree.'.format(total_time, total_nodes))
     print(tree.get_indices())
-    # print(len(tree.get_indices()))
+    print(tree.get_depth())
     print(tree.get_signature_node_and_leave_indices())
     print('The accuracy is {0}.'.format(
-        tree.get_accuracy(test_paths=test_paths, test_labels=test_labels, number_rf=number_rf)))
+        tree.get_accuracy(test_paths=test_paths, test_labels=test_labels, args=args, accuracy_function=get_average_accuracy_rf)))
 
 tree = SignatureTree(train_paths=train_paths, validation_paths=validation_paths, train_labels=train_labels,
-                           validation_labels=validation_labels, initial_signature_level=0)
+                     validation_labels=validation_labels, initial_signature_level=0)
 total_time = 0
 total_nodes = 0
 for number_nodes in number_nodes_vec:
     tic = time.perf_counter()
-    tree.find_nodes_number(number_nodes=number_nodes, number_rf=number_rf, mode="linear")
+    tree.find_nodes_number(number_nodes=number_nodes, args=args, mode="linear",
+                           accuracy_function=get_average_accuracy_rf)
     toc = time.perf_counter()
     total_time += toc - tic
     total_nodes += number_nodes
     print('It took {0} seconds to find {1} nodes in the linear SignatureTree.'.format(total_time, total_nodes))
     print(tree.get_indices())
-    # print(len(tree.get_indices()))
+    print(tree.get_depth())
     print(tree.get_signature_node_and_leave_indices())
-    # print(tree.get_accuracy(test_paths=train_paths, test_labels=train_labels))
-    # print(tree.get_accuracy(test_paths=validation_paths, test_labels=validation_labels))
     print('The accuracy is {0}.'.format(
-        tree.get_accuracy(test_paths=test_paths, test_labels=test_labels, number_rf=number_rf)))
+        tree.get_accuracy(test_paths=test_paths, test_labels=test_labels, args=args, accuracy_function=get_average_accuracy_rf)))
