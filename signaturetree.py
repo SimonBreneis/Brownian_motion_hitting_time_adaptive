@@ -19,8 +19,8 @@ class SignatureTree:
         self.n_pred = n_pred
         self.nodes = []
         self.leaves = []
-        self.nodes.append(sn.SignatureNode(train_values=np.ones(shape=(train_paths.shape[0], train_paths.shape[2])),
-                                           val_values=np.ones(shape=(val_paths.shape[0], val_paths.shape[2])),
+        self.nodes.append(sn.SignatureNode(train_paths=np.ones(shape=(train_paths.shape[0], train_paths.shape[2])),
+                                           val_paths=np.ones(shape=(val_paths.shape[0], val_paths.shape[2])),
                                            root=self, index=[], is_active=True, is_right_successor=True))
         self.nodes[0].compute_successors()
         self.leaves.extend(self.nodes[0].successor_leaves())
@@ -183,10 +183,8 @@ class SignatureTree:
                     self.training_active = False
             return True
         for i in range(n_nodes):
-            print(i)
             found_new_node = False
             while not found_new_node:
-                print(f"Finding new node among {len(self.leaves)} leaves.")
                 if len(self.leaves) != 0:
                     found_new_node = self.find_new_node(mode)
                 else:
@@ -197,7 +195,7 @@ class SignatureTree:
     def predictions(self, test_paths):
         self.test_paths = test_paths
         self.test_increments = test_paths[:, :, 1:] - test_paths[:, :, :-1]
-        self.nodes[0].compute_test_values(test_values=np.ones(shape=(test_paths.shape[0], test_paths.shape[2])))
+        self.nodes[0].compute_test_paths(test_paths=np.ones(shape=(test_paths.shape[0], test_paths.shape[2])))
         return np.array([self.predictor(self.features("train"), self.train_labels, self.features("test"))
                          for _ in range(self.n_pred)])
 

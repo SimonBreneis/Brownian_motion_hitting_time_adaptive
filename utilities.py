@@ -15,9 +15,9 @@ def brownian_motion(T, N):
 
 
 def brownian_time(T, N):
-    time = np.array([i * T / N for i in range(0, N + 1)]).reshape(N + 1, 1)
+    t = np.array([i * T / N for i in range(0, N + 1)]).reshape(N + 1, 1)
     brownian = brownian_motion(T, N).reshape(N + 1, 1)
-    return np.concatenate((time, brownian), axis=1).transpose()
+    return np.concatenate((t, brownian), axis=1).transpose()
 
 
 def brownian_motion_multidimensional(T, N, dim):
@@ -28,7 +28,7 @@ def check_hitting(path, threshold):
     return np.amax(path) >= threshold
 
 
-def integrate_against_indefinite(x, y_diff):
+def integrate(x, y_diff):
     """
     Computes the indefinite integral int x dy.
     :param x: Vector of x-values
@@ -47,8 +47,8 @@ def check_hitting_levy(paths):
     y = paths[:, 1, :]
     x_diff = x[:, 1:] - x[:, :-1]
     y_diff = y[:, 1:] - y[:, :-1]
-    levy_area = integrate_against_indefinite(x, y_diff) - integrate_against_indefinite(y, x_diff)
-    return integrate_against_indefinite(x, y_diff)[:, -1] + x[:, -1] > 0
+    levy_area = integrate(x, y_diff) - integrate(y, x_diff)
+    return integrate(x, y_diff)[:, -1] + x[:, -1] > 0
 
 
 def predictor_nn(train_features, train_labels, test_features):
