@@ -20,10 +20,6 @@ def brownian_time(T, N):
     return np.concatenate((t, brownian), axis=1).transpose()
 
 
-def brownian_motion_multidimensional(T, N, dim):
-    return np.array([brownian_motion(T, N) for _ in range(dim)])
-
-
 def check_hitting(path, threshold):
     return np.amax(path) >= threshold
 
@@ -104,3 +100,91 @@ def test(n_train, n_val, n_test, n_nodes_vec, time_steps, T, predictor, n_pred, 
         print(f"Depth: {tree.depth()}, Number of nodes: {tree.n_nodes()}")
         print(f'The accuracy is {tree.accuracy(test_paths=test_paths, test_labels=test_labels)}.')
         print(f"The nodes used are {tree.indices()}")
+
+
+def brownian_motion_multidimensional(T, N, dim):
+    bm = np.empty(shape=(N+1, dim))
+    for i in range(dim):
+        bm[:, i] = brownian_motion(T, N)
+    return bm
+
+
+def brownian_adjoin_time(T, N, brownian):
+    time = np.array([i * T / N for i in range(0, N + 1)]).reshape(N + 1, 1)
+    brownian = brownian.reshape(N + 1, 1)
+    return np.concatenate((time, brownian), axis=1)
+
+
+def bisect(f, a, b, tol):
+    """
+    Finds minimum of convex f in [a,b] using bisection up to an error tolerance of tol.
+    :param f: Function
+    :param a: Left point of interval
+    :param b: Right point of interval
+    :param tol: Error tolerance
+    :return: [argmin, min]
+    """
+    xl = a
+    xr = b
+    yl = f(xl)
+    yr = f(xr)
+    xm = (a+b)/2
+    ym = f(xm)
+    error = np.fabs(yr - yl)
+    while error > tol:
+        xml = (xl + xm)/2
+        yml = f(xml)
+        if yml < ym:
+            xr = xm
+            yr = ym
+            xm = xml
+            ym = yml
+        else:
+            xmr = (xm + xr)/2
+            ymr = f(xmr)
+            if ymr < ym:
+                xl = xm
+                yl = ym
+                xm = xmr
+                ym = ymr
+            else:
+                xl = xml
+                yl = yml
+                xr = xmr
+                yr = ymr
+        error = np.fabs(yr - yl)
+    return np.array([xm, ym])
+
+
+def bisect_no_interval(f, tol):
+    """
+    Finds minimum of function f on R up to some tolerance tol.
+    :param f: The function
+    :param tol: The tolerance
+    :return: [argmin, min]
+    """
+    xl = -1
+    xm = 0
+    xr = 1
+    yl = f(-1)
+    ym = f(0)
+    yr = f(1)
+    interval_found = False
+    while not interval_found:
+        if ym <= yl and ym <= yr:
+            interval_found = True
+        elif yl < yr:
+            xr = xm
+            yr = ym
+            xm = xl
+            ym = yl
+            xl *= 2
+            yl = f(xl)
+        else:
+            xl = xm
+            yl = ym
+            xm = xr
+            ym = yr
+            xr *= 2
+            yr = f(xr)
+    return bisect(f, xl, xr, tol)

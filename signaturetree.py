@@ -43,10 +43,10 @@ class SignatureTree:
             return self.add_node_elimination()
 
     def add_node_initial(self, node):
-        if node.index() not in self.indices():
+        if node.index not in self.indices():
             self.nodes.append(node)
             node.compute_successors()
-            node.set_is_active(True)
+            node.is_active = True
             if node in self.leaves:
                 self.leaves.remove(node)
             self.leaves.extend(node.successor_leaves())
@@ -56,10 +56,10 @@ class SignatureTree:
     def add_node_full(self):
         best_index = np.argmax(self.leave_accuracies)
         best_node = self.leaves[best_index]
-        if best_node.index() not in self.indices():
+        if best_node.index not in self.indices():
             self.nodes.append(best_node)
             best_node.compute_successors()
-            best_node.set_is_active(True)
+            best_node.is_active = True
             if best_node in self.leaves:
                 self.leaves.remove(best_node)
             self.leaves.extend(best_node.successor_leaves())
@@ -69,10 +69,10 @@ class SignatureTree:
     def add_node_linear(self):
         best_index = np.argmax(self.leave_accuracies)
         best_node = self.leaves[best_index]
-        if best_node.index() not in self.indices():
+        if best_node.index not in self.indices():
             self.nodes.append(best_node)
             best_node.compute_successors()
-            best_node.set_is_active(True)
+            best_node.is_active = True
             self.leaves = best_node.successor_leaves()
             return True
         return False
